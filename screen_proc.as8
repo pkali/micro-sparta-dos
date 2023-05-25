@@ -1,0 +1,80 @@
+
+
+lines = 24
+screenSize = lines*40+dlend-dl+1
+
+screenStart
+	sbw MEMTOP #screenSize newDLaddress 
+	lda newDLAddress+1
+	and #$F0
+	sta newAddressTemp+1
+	lda MEMTOP+1
+	and #$F0
+	cmp newAddressTemp+1
+	beq screenFitsInSamePageAsMEMTOP
+	mva #0 newAddressTemp
+	lda MEMTOP+1
+	and #$F0
+	sta newAddressTemp+1
+	sbw newAddressTemp #screenSize newDLaddress
+screenFitsInSamePageAsMEMTOP
+	;now adjust the screen pointer in DL
+	adw newDLaddress #dlend-dl newScreenAddress
+	mwa newScreenAddress PdlScreenAddress
+  mwa newDLaddress PdlJumpAddress
+
+	/* move dl to the new home */
+	mwa Pdl tempA
+	mwa newDLAddress tempB
+	ldy #dlend-dl-1
+dlMoveLoop
+	lda (tempA),y
+	sta (tempB),y
+	dey
+	bpl dlMoveLoop	;CAUTION!!! dl Must be shorter than 128 bytes!!!
+  mwa newDLaddress DLPTRS
+
+  vdli dli
+  mva #$0e $2c8 ;COLBAKS
+  rts
+    
+newDLaddress
+	dta  $00, $00
+newAddressTemp
+newScreenAddress
+	dta $00, $00
+;---------------
+Pdli DTA V(dli)
+dli
+    pha
+    sta WSYNC
+    mva VCOUNT COLBAK
+    pla
+    rti
+    
+Pdl	
+	DTA V(dl) ;this is spartaaaaa
+PdlScreenAddress
+	DTA V(dlScreenAddress)
+PdlJumpAddress
+	DTA V(dlJumpAddress)
+
+dl
+    dta $70,$70,$70+$80
+    dta $42+$80
+dlScreenAddress
+    dta a (screen)
+ 
+    :lines-1 dta $02+$80
+
+    dta $41
+dlJumpAddress
+    dta a(dl)
+dlend
+	.IF dlend-dl >127 
+		.ERROR "DL too long"
+	.ENDIF
+screen
+    dta d"aba"
+    :40 dta $00
+;-----------------------------

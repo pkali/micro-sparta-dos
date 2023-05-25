@@ -1,0 +1,458 @@
+; Uwaga!!!
+; Zapis dotyczacy jednego pliku w pamieci trzymany jest inaczej niz w basicowych wersjach MSINI
+; a takze inaczej niz w pliku na dysku
+; Ma on o jeden bajt wiecej, czyli zajmuje 47 bajtow
+; 11b nazwa pliku i rozszerzenie
+; 35b dluga nazwa pliku
+;  1b znacznik ze to katalog - " " plik, ">" katalog
+
+; stale systemowe
+MEMTOP = $02e5
+MEMLO  = $02e7
+
+; Symbole SDX uzyte w programie - skoki do nich loader SpartyX podmienia po wczytaniu
+comtab	 smb 'comtab'
+u_getpar smb 'u_getpar'
+u_gepath smb 'u_gepath'
+printf   smb 'printf'
+getcwd	 smb 'getcwd'
+file_p   smb 'file_p'
+ffirst   smb 'ffirst'
+fnext    smb 'fnext'
+fclose   smb 'fclose'
+fopen   smb 'fopen'
+fread   smb 'fread'
+fwrite   smb 'fwrite'
+
+; offsety do comtab
+lbuf	equ $3f
+bufoff	equ $0a
+comfnam	equ $21
+trails	equ $1a
+
+; Stale adresy SDX
+path     equ $07a0
+device	 equ $0761
+fmode   equ $0778
+fatr1    equ $0779
+fatr2    equ $077a
+faux1    equ $0782
+faux2    equ $0783
+faux3    equ $0784
+faux4    equ $0785
+faux5    equ $0786
+
+; Stale adresy - pojedynczy zapis katalogu
+dirbuf   equ $0789
+dirfatr  equ dirbuf
+dirf1sec equ dirbuf+1
+dirflen  equ dirbuf+3
+dirfname equ dirbuf+6
+dirfdate equ dirbuf+17
+dirftime equ dirbuf+20
+
+; zmienne na stronie zerowej
+edited_file_addr equ $80  ; adres w pamieci RAM obecnie edytowanego zapisu, obliczony z buffer o edited_file
+print_addr		equ $82 ; adres w pamieci ekranu, do ktorego zapisujemy.
+
+
+; Poczatek kodu relokowalnego
+ blk reloc main
+; Tutaj kod relokowalny, Sparta zaladuje go powyzej swojego MEMLO
+; i po zaladowaniu oraz relokacji adresow, podniesie MEMLO za ten blok
+; czyli w programie mozna jako bufora roboczy zajac obszar od MEMLO do HIMEM
+
+start
+    jsr printf
+	.BYTE 125,'MSINI Lite4 (c) 2010-08-31',$9b,0
+	jsr u_getpar	; pobranie kolejnego parametru
+    jsr getcwd     ; jesli parametrem byl podkatalog to go obrobi a jesli go nie bylo to poda bierzacy
+	                ; co wazne SPARWDZA czy ten katalog jest i jesli nie wychodzi z odpowiednim bledem !
+	lda device
+	tax
+	and #%11110000 ; sprawdzamy czy podana (lub nie) sciezka dotyczy napedu dyskow
+	bne not_disc_drive
+	dex
+	txa
+	clc
+	adc #'A'
+	sta ourpath
+	; robimy sciezke
+	ldx #$00
+	; przepisujemy z pobranej do naszej
+path_loop1
+	lda path,x
+	sta ourpath+2,x
+	beq end_of_path
+	inx
+	bne path_loop1
+end_of_path
+    ; na koniec uzupelniamy o '\', znak konca linii o 0 (dla pewnosci dla printf)
+	lda #'\'
+	sta ourpath+2,x
+    inx
+	lda #$9b
+	sta ourpath+2,x
+    inx
+	lda #$00
+	sta ourpath+2,x
+    inx
+	stx ourpath_end   ; zapamietajmy gdzie konczy sie sciezka - tu bedzie dopisywana nazwa pliku
+not_disc_drive
+; wyliczmy na ile zapisow mamy miejsce w pamieci
+	; od memtopa odjac memlona
+	sbw MEMTOP MEMLO buffer   ; tymczasowo w max_flies, bo trzeba to podzielic przez dlugosc wpisu - 47
+	; no i jak to podzielic.... ???
+	; a wezmy poprostu poodejmujmy w petli .... :)
+	mwa #0 max_files	; zerujmy licznik plikow
+count_free_files
+	sbw buffer #47 buffer
+	bcc end_memory
+	inw max_files
+	jmp count_free_files
+end_memory
+	jsr printf
+    .BYTE 'MEMLO: $%4x , MEMTOP: $%4x',$9b,'FREE MEMORY FOR $%4x FILES.',$9b,0
+	.WORD MEMLO,MEMTOP,max_files
+	jsr printf
+	.BYTE 'Reading directory: '
+	.BYTE '%s',$9b,0
+	.WORD ourpath
+	; parametry '*' na standardowe
+	jsr set_default_params
+
+; ----- czytamy katalog zliczajac pliki i umieszczajac ich nazwy w pamieci -----
+	
+; to przeczytajmy katalog procedurami SDX
+	; najpierw dopiszmy maske
+	ldx ourpath_end
+	ldy #$00
+make_search_patch
+	lda searchmask,y
+	sta ourpath,x
+	beq spath_ready
+	inx
+	iny
+	bne make_search_patch
+spath_ready
+	mwa Pourpath file_p
+    ; maska artybutów - tylko nieukryte ($20)
+	lda #$20
+	sta fatr1
+	; licznik plikow na 00
+	mwa #0 num_of_files
+    ; czytamy pierwszy wpis
+	jsr ffirst
+	bmi directory_end
+	bpl dir_entry_in_buf	; od razu obrabiamy
+get_next_dir_entry
+	; czytamy kolejne wpisy
+	jsr fnext
+	bmi directory_end
+dir_entry_in_buf
+	; tu mamy w 'dirbuf' pojedynczy zapis - trzeba cos z nim zrobic
+	; sprawdzmy czy to nie MSDOS
+	ldx #$07
+check_next1
+	lda dirfname,x
+	cmp MSDOSname,x
+	bne not_msdos
+	dex
+	bpl check_next1
+	bmi get_next_dir_entry
+not_msdos
+	; tu wiemy juz ze plik nie nazywa sie MSDOS.*
+	; printujemy kropke....
+	jsr printf
+	.BYTE '.',0
+	; wyznaczamy adres w buforze
+	mwa num_of_files edited_file_nr
+	jsr set_edit_addr
+	; mamy adres przepisujemy wiec nazwe pliku
+	ldy #0
+name_to_mem_loop
+	lda dirfname,y
+	sta (edited_file_addr),y
+	iny
+	cpy #11
+	bne name_to_mem_loop
+	; reszte dopelnamy spacjami
+	lda #' '
+spaces_fill
+	sta (edited_file_addr),y
+	iny
+	cpy #47
+	bne spaces_fill
+	; sprawdzmy czy to przypadkiem nie katalog i jesli tak dopiszmy na koncu <DIR>
+	lda dirfatr
+	and #$20
+	beq not_DIR
+	; dopisujemy <DIR> na koncu tekstu
+	ldy #46
+	ldx #5
+DIRmark_set
+	lda DIRmark,x
+	sta (edited_file_addr),y
+	dey
+	dex
+	bpl DIRmark_set
+not_DIR
+	inw num_of_files	; zwiekszamy licznik plikow
+	jmp get_next_dir_entry
+directory_end
+	jsr fclose	
+	jsr printf
+    .BYTE $9b,'FILES IN DIR: $%4x.',$9b,0
+	.WORD num_of_files
+
+; ----- sprawdzamy czy jest plik MSDOS.DAT -----	
+
+	; najpierw dopiszmy nazwe do sciezki
+	ldx ourpath_end
+	ldy #$00
+make_dat_patch
+	lda datname,y
+	sta ourpath,x
+	beq dat_path_ready
+	inx
+	iny
+	bne make_dat_patch
+dat_path_ready
+	mwa Pourpath file_p
+    ; maska artybutów - tylko nieukryte ($20)
+	lda #$20
+	sta fatr1
+    ; czytamy pierwszy wpis
+	jsr ffirst
+	bpl dat_file_found
+	jsr fclose
+	jmp start_edit
+	
+; ----- jest plik MSDOS.DAT - czytamy go -----
+
+dat_file_found
+	jsr fclose		; zamykamy czytanie katalogu
+	jsr printf
+	.BYTE 'MSDOS.DAT found.',$9b,'Reading descriptions',$9b,$0
+	; czyli przygotowujemy otwarcie pliku do odczytu
+	mwa Pourpath file_p
+	; tryb otwarcia - odczyt
+	lda #$04
+	sta fmode
+    ; maska artybutów - tylko nieukryte ($20) i niekatalogi ($80)
+	lda #$A0
+	sta fatr1
+	; i otwieramy plik
+	jsr fopen
+	
+	; plik otwarty - petla czytajaca dane tu sie zaczyna
+read_block
+	mwa Pone_buffer faux1	; adres bufora
+	mwa #46 faux4				; dlugosc bufora (bez znacznika katalogu)
+	jsr fread
+	bmi end_dat_file
+	; printujemy kropke....
+	jsr printf
+	.BYTE '.',0
+	; sprawdzmy czy nie gwiazdka
+	lda one_buffer
+	cmp #'*'
+	beq asterix_found
+	; jesli nie gwiazdka to rozpoczynamy petle szukania
+	mwa #0 edited_file_nr
+search_names1
+	jsr set_edit_addr
+	; porownajmy filenama
+	ldy #10
+compare_names1
+	lda (edited_file_addr),y
+	cmp one_buffer,y
+	bne check_next_name1
+	dey
+	bpl compare_names1
+	; nazwy takie same - przepiszmy calosc (poza znacznikiem katalogu, bo on juz jest)
+	ldy #45
+long_name_from_DAT
+	lda one_buffer,y
+	sta (edited_file_addr),y
+	dey
+	bpl long_name_from_DAT
+check_next_name1
+	inw edited_file_nr
+	cpw num_of_files edited_file_nr
+	bne search_names1  ; jesli edited jest mniejszy lub rowny num_files
+	beq read_block
+asterix_found
+    ; jesli gwiazdka to przepisujemy 'opis' do specjalnego bufora
+	ldy #34
+get_asterix_params
+	lda one_buffer+11,y
+	sta current_params,y
+	dey
+	bpl get_asterix_params
+	bmi read_block	; i czytamy dalej...
+end_dat_file
+	jsr fclose
+; ----- przygotowujemy ekran edycji -----
+
+start_edit
+	jsr DAT_file_write
+stop
+	jmp stop
+	rts
+
+; procedura zapisu pliku DAT
+DAT_file_write
+	; przygotowujemy otwarcie pliku do zapisu
+	mwa Pourpath file_p
+	; tryb otwarcia - zapis
+	lda #$08
+	sta fmode
+    ; maska artybutów - tylko nieukryte ($20) i niekatalogi ($80)
+	lda #$A0
+	sta fatr1
+	lda #$00
+	sta fatr2
+	; i otwieramy plik
+	jsr fopen
+    ; plik otwarty do zapisu
+	; na poczatek sprawdzamy czy trzeba zapisac parametry kolorow itp....
+	ldy#34
+check_standard_params
+	lda current_params,y
+	cmp standard_params,y
+	bne asterix_write
+	dey
+	bpl check_standard_params
+	bmi asterix_standard
+asterix_write
+	mwa Pasterix_data faux1	; adres bufora
+	mwa #46 faux4				; dlugosc bufora (bez znacznika katalogu - bo go nie zapisujemy)
+	jsr fwrite
+asterix_standard
+	mwa #0 edited_file_nr
+	; petla zapisujaca dane tu sie zaczyna
+write_block
+	; sprawdzmy czy nazwa nie jest pusta
+	jsr set_edit_addr
+	; porownajmy filenama ze spacjemi
+	ldy #11
+compare_names2
+	lda (edited_file_addr),y
+	cmp #' '
+	bne name_not_empty1
+	iny
+	cpy #46
+	bne compare_names2
+    beq next_name_to_write
+name_not_empty1
+    ; nazwa nie jest pusta wyprintowujemy ja wiec do pliku, ale nie tak latwo
+	; najpierw przepiszmy do podrecznego bufora (bez znacznika katalogu)
+	ldy #45
+name_to_buff
+	lda (edited_file_addr),y
+	sta one_buffer,y
+	dey
+	bpl name_to_buff
+	; i zapisujemy tem buforek
+	mwa Pone_buffer faux1	; adres bufora
+	mwa #46 faux4				; dlugosc bufora (bez znacznika katalogu)
+	jsr fwrite
+next_name_to_write
+	inw edited_file_nr
+	cpw num_of_files edited_file_nr
+	bne write_block  ; jesli edited jest mniejszy
+end_dat_write
+	jsr fclose
+    rts
+
+	
+; procedura obliczajaca na podstawie numeru zapisu
+; jego adres w pamieci RAM
+set_edit_addr
+	; trzeba pomnozyc edited_file_nr przez dlugosc zapisu (46) i dodac adres bufora
+	; od razu robimy dodawanie, czyli do wyniku nie zero tylko adres bufora!!!
+	mwa Pbuffer edited_file_addr
+	mwa edited_file_nr word1 ; w word1 mnozna (2 bajty)
+	lda #47
+	sta word2 ; w word2 mnoznik (1 bajt)
+    ldy #8    ; mnozymy przez 8 bitow - word2 (choc wlasciwie mniej mozna)
+	clc
+mulloop1
+	lsr word2
+	bcc mull_no_c
+	adw edited_file_addr word1
+mull_no_c
+	asl word1
+	rol word1+1
+	dey
+	bne mulloop1
+	rts
+
+; ustawienie parametrow dodatkowych folderu (gwiazdka) na standardowe
+set_default_params
+	ldy #34
+setting_def_par
+	lda standard_params,y
+	sta current_params,y
+	dey
+	bpl setting_def_par
+	rts
+	
+; procedura zmiany znaku w akumulatorze z ATASCII na EKRANOWY (uwzglednia inwers wiec jest dziwna)
+atascii2internal
+	asl @
+	php
+	cmp #$c0
+	bcs internal_OK
+	sbc #$3f
+	bcs internal_OK
+	adc #$c0
+internal_OK
+	plp
+	ror @
+	rts
+
+; zmienne programu
+standard_params
+    .BYTE 'CAC4C401                           ' ; standardowe parametry dla '*'
+Pasterix_data	DTA V(asterix_data)
+asterix_data
+	.BYTE '*          '
+current_params
+    .BYTE '                                   ' ; miejsce na edytowane parametry
+DIRmark
+	.BYTE '<DIR>>',$00   ; koncowka dlugiej nazwy i znacznik katalogu za nia (jesli to katalog)
+searchmask
+	.BYTE '*.*',$9b,$00
+datname
+	.BYTE 'MSDOS.DAT',$9b,$00
+MSDOSname
+	.BYTE 'MSDOS   ',$00
+Pourpath	DTA V(ourpath)	; wskaznik na ourpath (potrzebne by wiedziec gdzie bedzie po relokacji)
+ourpath
+    .BYTE 'A:\                                                                '
+ourpath_end
+	.BYTE $00		; offset konca sciezki wskazuje na pierwszy znak po '\'
+edited_file_nr
+	.WORD $0000    ; numer aktualnie edytowanego zapisu (do obliczenia offsetu)
+max_files
+	.WORD $0000
+num_of_files
+	.WORD $0000
+first_on_screen
+	.WORD $0000	; numer pierwszego zapisu wyswietlanego na ekranie (offset)
+word1
+	.WORD $0000	; zmienna pomocnicza do mnozenia itp...
+word2
+	.WORD $0000	; druga zmienna pomocnicza
+Pone_buffer	DTA V(one_buffer)
+one_buffer
+	.BYTE '                                              '
+Pbuffer	DTA V(buffer)
+buffer
+	.BYTE $0000	; adres bufora
+	
+; na koncu automatyczne wygenerowanie bloku zawierajacego adresy do relokacji
+ blk update address
+ blk update symbol
