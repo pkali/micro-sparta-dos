@@ -1250,7 +1250,7 @@ NoZpage
 	 
      JMP   loader.LoadStart     ; po przepisaniu 
 FileToOpen
-     .BYTE "H:SCORCH.XEX",155,0
+     .BYTE 'H:SCORCH.XEX',0
 ; Sprawdzenie odpowiednich flag i przepisanie za loaderem procedury obslugi odpowiedniego Turba
 ; na koniec odpowiednie zmodyfikowanie MEMLO
 ADDspeedProc
