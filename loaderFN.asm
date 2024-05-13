@@ -79,13 +79,13 @@ IRQENS = $10
 ; zmienne procedury ladowania pliku (w miejscu zmiennych CIO - ktore sa nieuzywane)
 
 ; adres komorki pamieci do ktorej zapisujemy kolejny ladowany bajt pliku
-InBlockAddr = $24  ; word
+InBlockAddr = $64  ; word
 ; dlugosc ladowanego bloku odjeta od $10000 (zwiekszana osiaga ZERO po zaladowaniu bloku w calosci)
-ToBlockEnd = $26  ; word
-BlockLen= $26 ; word
+ToBlockEnd = $66  ; word
+BlockLen = $66 ; word
 ; najmlodszy z trzech bajtow zliczajacych do konca pliku - patrz ToFileEndH
 ToFileEndL = $28
-BlockATemp = $28
+BlockATemp = $68
 CompressedMapPos = $3D ; pozycja w skompresowanej mapie pliku
 
 CheckSUM = $30
@@ -199,23 +199,7 @@ movedproc
 ToFileEndH
      .WO $0000
 FileInit		; skok JSR pod adres inicjalizacji po (przed) kazdym nastepnym bloku binarnym
-     TXA
-     PHA
-     LDA   ToFileEndL
-     PHA
-	 LDA   CompressedMapPos
-	 PHA
-	 LDA   CompressedMapPos+1
-	 PHA
      JSR   GoInitAddr
-	 PLA
-	 STA   CompressedMapPos+1
-	 PLA
-	 STA   CompressedMapPos
-     PLA
-     STA   ToFileEndL
-     PLA
-     TAX
 FileNextBlock
      ; wczytanie kolejnego bloku binarnego
      JSR   FileGetBlockStart    ; pobranie dwoch bajtow (adres poczatku bloku)
