@@ -82,8 +82,10 @@ IRQENS = $10
 InBlockAddr = $24  ; word
 ; dlugosc ladowanego bloku odjeta od $10000 (zwiekszana osiaga ZERO po zaladowaniu bloku w calosci)
 ToBlockEnd = $26  ; word
+BlockLen= $26 ; word
 ; najmlodszy z trzech bajtow zliczajacych do konca pliku - patrz ToFileEndH
 ToFileEndL = $28
+BlockATemp = $28
 CompressedMapPos = $3D ; pozycja w skompresowanej mapie pliku
 
 CheckSUM = $30
@@ -214,23 +216,35 @@ FileInit		; skok JSR pod adres inicjalizacji po (przed) kazdym nastepnym bloku b
      STA   ToFileEndL
      PLA
      TAX
-FileNextBlock							; wczytanie kolejnego bloku binarnego
-     JSR   FileGetBlockStart  ; pobranie dwoch bajtow (adres poczatku bloku)
-     AND   InBlockAddr
+FileNextBlock
+     ; wczytanie kolejnego bloku binarnego
+     JSR   FileGetBlockStart    ; pobranie dwoch bajtow (adres poczatku bloku)
+     CPY  #$88  ; czy EOF
+     jeq  EndOfFile
+     LDA   InBlockAddr
+     AND   InBlockAddr+1
      CMP  #$FF							; jesli oba sa $FF to.....
      BNE   FileNoFFFFHead
      JSR   FileGetBlockStart 	; pobranie jeszcze raz  
 FileNoFFFFHead
-     JSR   FileGetByte        ; Pobranie adresu konca ladowanego bloku
-     SBC   InBlockAddr         			; i wyliczenie jego dlugosci
-     EOR  #$FF             				; UWAGA! Dlugosc jest zEORowana z $FFFF
-     STA   ToBlockEnd       			; czyli odjeta od $10000
-     PHP                   				; odliczanie ilosci pobranych bajtow jest wiec potem robione
-     JSR   FileGetByte     	; przez dodawanie i sprawdzanie czy nie ZERO
-     PLP
-     SBC   InBlockAddr+1
-     EOR  #$FF
-     STA   ToBlockEnd+1
+     mwa InBlockAddr BlockATemp     ; zapamietanie adresu poczatkowego bloku (na chwile)
+     LDA #<BlockLen
+     sta InBlockAddr
+     lda #>BlockLen
+     sta InBlockAddr+1
+     JSR GetFile2Bytes    ; pobranie dwoch bajtow - ; Pobranie adresu konca ladowanego bloku
+     CPY  #$88  ; czy EOF
+     beq  EndOfFile
+     ; wyliczenie d³ugoœci bloku programu binarnego
+     sec
+     lda BlockLen
+     sbc BlockATemp
+     sta BlockLen
+     lda BlockLen+1
+     sbc BlockATemp+1
+     sta BlockLen+1
+     inw BlockLen
+     mwa BlockATemp InBlockAddr     ; odtworzenie adresu poczatkowego bloku
      SEC
 WhatIsIt
      BCS   FileNoFirstBlock 			; tu wstawiany jest raz (na poczatku) rozkaz LDA ($0D),Y
@@ -245,57 +259,23 @@ FileNoFirstBlock
      STA   $02E2          				; bo po kazdym bloku odbywa sie tam skok
      LDA  #>Jrts          	; jesli nie jest to blok z adresem inicjacji
      STA   $02E3       					; to dzieki temu nic sie nie stanie
-     LDY  #$00
+     
 BlockReadLoop							;; petla odczytujaca z pliku blok binarny 
-     INC   ToFileEndL          			;; zwiekszenie licznika bajtow w calym pliku i jesli ZERO
-     BEQ   GoCheckEOF          			;; skok do procedury sprawdzajacej dwa starsze jego bajty
-     CPX   SecLen         				;; sprawdzenie czy juz caly sektor przepisany jesli tak 
-	 bne   NoNextSector1            ; --
-	 lda   InSectorCountH            ; -- obsluga sektorow ponad 256b
-	 cmp   SecLen+1                  ; --
-     BEQ   GoGetNextFileSect       		;; skok do procedury pobrania nastepnego sektora 
-NoNextSector1
-FileSecBuffHaddr1 = *+2         ; samomodyfikacja kodu potrzebna do obslugi sektorow ponad 256b !!!
-     LDA   FileSecBuff,X
-     INX
-	 bne   InBlockReadLoop		; --
-	 jsr   IncrementationXH		; --  obsluga sektorow ponad 256b (ten trik dziala bo tam juz byl RTS :) )
-InBlockReadLoop
-     STA  (InBlockAddr),Y
-     INY
-     BNE   label15
-     INC   InBlockAddr+1
-label15
-     INC   ToBlockEnd
-     BNE   BlockReadLoop
-     INC   ToBlockEnd+1
-     BNE   BlockReadLoop
-     BEQ   FileInit        				; koniec bloku - skok pod adres inicjalizacji
-GoCheckEOF
-     JSR   CheckEOF  		; skok do procedury wspolnej dla pobierania bloku i bajtu
-     BCS   InBlockReadLoop        		;tu zawsze jest CARRY, a w A kolejny bajt z pliku, wiec powrot do petli
-GoGetNextFileSect
-     JSR   GetNextFileSect
-     BCS   InBlockReadLoop          	; tu zawsze jest CARRY, a w A kolejny bajt z pliku, wiec powrot do petli
+     JSR  GetFileBytes
+     CPY  #$88  ; czy EOF
+     beq  EndOfFile
+     jne   FileInit        				; koniec bloku - skok pod adres inicjalizacji
 FileGetBlockStart
-     JSR   FileGetByte
-     STA   InBlockAddr
-     JSR   FileGetByte
-     STA   InBlockAddr+1
-     RTS
+     LDA #<InBlockAddr
+     sta InBlockAddr
+     lda #>InBlockAddr
+     sta InBlockAddr+1
+     JMP GetFile2Bytes    ; pobranie dwoch bajtow
 GoInitAddr
      JMP  ($02E2)
-GetDataSector
-ReadErrorLoop
-     LDX  #$0B
-SetDCB
-     LDA   blokDanychIO_Loader,X
-     STA   DDEVIC,X
-     DEX
-     BPL   SetDCB
 SioJMP
      JSR   JSIOINT
-     BMI   ReadErrorLoop				; jesli blad odczytu sektora to czytamy ponownie
+  ;   BMI   ReadErrorLoop				; jesli blad odczytu sektora to czytamy ponownie
      RTS
 blokDanychIO_Loader
     .BY $31,$01,$52,$40,<FileSecBuff,>FileSecBuff,$0A,$00,$80,$00
@@ -303,11 +283,6 @@ blokDanychIO_Loader
 SecLen = blokDanychIO_Loader+8 ; SecLen wskazuje na komórki do wpisania d³ugoœci sektora przed przepisaniem procki na stronê $0700
 SectorNumber
     .WO $0000
-CheckEOF
-     INC   ToFileEndH
-     BNE   NotEOF
-     INC   ToFileEndH+1
-     BNE   NotEOF
 EndOfFile								; to wykona sie przy nieoczekiwanym (i oczekiwanym) koncu pliku
      LDA  #>(JRESETWM-1)     ; cieply start (RESET) zamiast SelfTestu
      PHA
@@ -317,92 +292,24 @@ EndOfFile								; to wykona sie przy nieoczekiwanym (i oczekiwanym) koncu pliku
 ;     LDA  VCOUNT
 ;	 bne WaitLine0
      JMP  ($02E0)
-; Pobranie z pliku pojedynczego bajtu danych ... wynik w A, a CARRY ustawiony!!!
-FileGetByte
-     INC   ToFileEndL
-     BEQ   CheckEOF
-NotEOF
-     CPX   SecLen						;; nie EOF, ale moze koniec sektora
-	 bne   ByteToACCU				; --
-	 lda   InSectorCountH			; -- obsluga sektorow ponad 256b
-	 cmp   SecLen+1				; --
-     BEQ   GetNextFileSect				;; jesli tak to pobieramy nastepny
-ByteToACCU
-FileSecBuffHaddr2 = *+2         ; samomodyfikacja kodu potrzebna do obslugi sektorow ponad 256b !!!
-     LDA   FileSecBuff,X  				;; pobranie bajtu z pliku do A 
-     INX
-	 bne   GoToSec					; --
-IncrementationXH					; taki trik - to przypadkiem jest podprogram, wiec mozna tu wskoczyc zamiast zwiekszac liczniki w innym miejscu po raz drugi
-	 inc   InSectorCountH			; --
-	 inc   FileSecBuffHaddr1		; --  obsluga sektorow ponad 256b
-	 inc   FileSecBuffHaddr2		; --
-GoToSec
-     SEC
 Jrts
      RTS
-; Wczytanie do bufora kolejnego sektora pliku, kolejny bajt pliku w A, a CARRY ustawiony!!!
-GetNextFileSect
-	tya
-	pha
-ReadNextInSequence	
-SectorSequenceCount = *+1
-    lda #$00 ; to ju¿ ma byæ zainicjowane!!!
-	beq NextMapPosition
-	dec SectorSequenceCount
-	inc SectorNumber
-	bne noIncDAUX2
-	inc SectorNumber+1
-noIncDAUX2
-	bne ReadyToRead
-	;jak jest tutaj to jest b³¹d...
-	;powinien byæ skok do self-testu...
-NextMapPosition
-	jsr incCompressedMapPos
-	;UWAGA! adres w mapie jest zawsze zwiêkszany o 1
-	;wiêc przed uruchomieniem loadera trzeba zainicjowaæ adresem-1
-	ldy #0
-	lda (CompressedMapPos),y
-	bmi HowManyToSkip
-	beq SetNewStartSector
-	;tutaj jest ile kolejnych sektorów przeczytaæ w sekwencji
-	sta SectorSequenceCount
-	bne ReadNextInSequence ;zawsze skoczy
-HowManyToSkip
-	and #%01111111
-	clc
-	adc SectorNumber
-	sta SectorNumber
-	bcc noIncDAUX2_v2
-	inc SectorNumber+1
-noIncDAUX2_v2
-	bne ReadyToRead
-	;jak jest tutaj to jest b³¹d...
-	;powinien byæ skok do self-testu...
-SetNewStartSector
-	jsr incCompressedMapPos
-	lda (CompressedMapPos),y
-	sta SectorNumber
-	jsr incCompressedMapPos
-	lda (CompressedMapPos),y
-	sta SectorNumber+1	
-ReadyToRead	
-	JSR   GetDataSector		; wczytanie kolejnego sektora pliku do bufora
+GetFile2Bytes
+    mwa #2 BlockLen
+GetFileBytes
+      LDX #16 ; kanal 1
+      LDA #CGBINR ; rozkaz BGET
+      STA ICCOM,X ; COMMAND
+      LDA InBlockAddr
+      STA ICBUFA,x
+      LDA InBlockAddr+1
+      STA ICBUFA+1,x
+      LDA BlockLen
+      STA ICBUFL,x
+      LDA BlockLen+1
+      STA ICBUFL+1,x
+      JMP CIO
 
-	pla
-	tay
-	lda   #>FileSecBuff			; --
-	sta   FileSecBuffHaddr1		; --  obsluga sektorow ponad 256b
-	sta   FileSecBuffHaddr2		; --
-	LDX  #$00							; wyzerowanie wskaznika bajtu w sektorze
-	stx   InSectorCountH			; --
-	JEQ   ByteToACCU					; skok do pobrania bajtu z pliku do A i konc
-
-incCompressedMapPos
-	inc CompressedMapPos
-	bne skipIncCompressedMapPos
-	inc CompressedMapPos+1
-skipIncCompressedMapPos
-	rts
 ; starszy bajt licznika pozycji bajtu w sektorze - mlodszy jest caly czas w X
 ; potrzebny do obslugi sektorow wiekszych od 256b
 InSectorCountH
@@ -1328,7 +1235,7 @@ NoZpage
      
      ; a tutaj otwieramy kanal 1 CIO do odczytu 
 
-      LDX #1*16 ; kanal 1
+      LDX #16 ; kanal 1
       LDA #COPN ; rozkaz OPEN
       STA ICCOM,X ; COMMAND
         LDA #$04    ; READ
@@ -1343,7 +1250,7 @@ NoZpage
 	 
      JMP   loader.LoadStart     ; po przepisaniu 
 FileToOpen
-     .BYTE "C:",0
+     .BYTE "H:SCORCH.XEX",155,0
 ; Sprawdzenie odpowiednich flag i przepisanie za loaderem procedury obslugi odpowiedniego Turba
 ; na koniec odpowiednie zmodyfikowanie MEMLO
 ADDspeedProc
