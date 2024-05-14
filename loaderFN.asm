@@ -76,16 +76,10 @@ DOSINI = $0c
 IRQENS = $10
 
 
-; zmienne procedury ladowania pliku (w miejscu zmiennych CIO - ktore sa nieuzywane)
+; zmienne procedury ladowania pliku (w miejscu zmiennych CIO - ktore sa nieuzywane - niestety teraz sa)
 
-; adres komorki pamieci do ktorej zapisujemy kolejny ladowany bajt pliku
-InBlockAddr = $64  ; word
-; dlugosc ladowanego bloku odjeta od $10000 (zwiekszana osiaga ZERO po zaladowaniu bloku w calosci)
-ToBlockEnd = $66  ; word
-BlockLen = $66 ; word
 ; najmlodszy z trzech bajtow zliczajacych do konca pliku - patrz ToFileEndH
 ToFileEndL = $28
-BlockATemp = $68
 CompressedMapPos = $3D ; pozycja w skompresowanej mapie pliku
 
 CheckSUM = $30
@@ -193,11 +187,15 @@ START
 movedproc 
 	.local loader, $0700
  
-; dwa starsze bajty (bo to wielkosc 3 bajtowa) dlugosci pliku odjetej od $1000000
-; dzieki czemu mozna stwierdzic osiagniecie konca pliku przez zwiekszanie tych
-; bajtow (wraz z najmlodszym) i sprawdzanie czy osiagnieto ZERO
-ToFileEndH
-     .WO $0000
+; adres poczatkowy pamieci do ktorej zapisujemy kolejny ladowany blok pliku
+InBlockAddr
+    .WO 00  ; word
+; dlugosc ladowanego bloku 
+BlockLen
+    .WO 00 ; word
+; zmienna tymczasowa potrzebna do obliczenia dlugosci bloku
+BlockATemp
+    .WO 00
 FileInit		; skok JSR pod adres inicjalizacji po (przed) kazdym nastepnym bloku binarnym
      JSR   GoInitAddr
 FileNextBlock
@@ -257,24 +255,11 @@ FileGetBlockStart
      JMP GetFile2Bytes    ; pobranie dwoch bajtow
 GoInitAddr
      JMP  ($02E2)
-SioJMP
-     JSR   JSIOINT
-  ;   BMI   ReadErrorLoop				; jesli blad odczytu sektora to czytamy ponownie
-     RTS
-blokDanychIO_Loader
-    .BY $31,$01,$52,$40,<FileSecBuff,>FileSecBuff,$0A,$00,$80,$00
-; Dlugosc sektora to dwa ostatnie bajty bloku danych ($0080 lub $0100)
-SecLen = blokDanychIO_Loader+8 ; SecLen wskazuje na komórki do wpisania d³ugoœci sektora przed przepisaniem procki na stronê $0700
-SectorNumber
-    .WO $0000
 EndOfFile								; to wykona sie przy nieoczekiwanym (i oczekiwanym) koncu pliku
      LDA  #>(JRESETWM-1)     ; cieply start (RESET) zamiast SelfTestu
      PHA
      LDA  #<(JRESETWM-1)
      PHA
-;WaitLine0
-;     LDA  VCOUNT
-;	 bne WaitLine0
      JMP  ($02E0)
 Jrts
      RTS
@@ -294,10 +279,6 @@ GetFileBytes
       STA ICBUFL+1,x
       JMP CIO
 
-; starszy bajt licznika pozycji bajtu w sektorze - mlodszy jest caly czas w X
-; potrzebny do obslugi sektorow wiekszych od 256b
-InSectorCountH
-    .BY $00
 ; koniec czesci glownejprocedury ladowania pliku przepisywanej pod $0700
 ; tu zaczyna sie (takze przepisywana) procedura wykonujaca sie tylko raz
 ; w tym miejscu potem bedzie bufor
@@ -306,6 +287,21 @@ InSectorCountH
 zzzzzz  ; dla wygody - ta etykieta powinna miec $2100 jesli procedura ja poprzedzajaca miesci sie na stronie
 FirstMapSectorNr
      .WO $0000
+blokDanychIO_Loader
+    .BY $31,$01,$52,$40,<FileSecBuff,>FileSecBuff,$0A,$00,$80,$00
+; Dlugosc sektora to dwa ostatnie bajty bloku danych ($0080 lub $0100)
+SecLen = blokDanychIO_Loader+8 ; SecLen wskazuje na komórki do wpisania d³ugoœci sektora przed przepisaniem procki na stronê $0700
+SectorNumber
+    .WO $0000
+; dwa starsze bajty (bo to wielkosc 3 bajtowa) dlugosci pliku odjetej od $1000000
+; dzieki czemu mozna stwierdzic osiagniecie konca pliku przez zwiekszanie tych
+; bajtow (wraz z najmlodszym) i sprawdzanie czy osiagnieto ZERO
+ToFileEndH
+     .WO $0000  ; do usuniecia
+SioJMP
+     JSR   JSIOINT
+  ;   BMI   ReadErrorLoop				; jesli blad odczytu sektora to czytamy ponownie
+     RTS
 LoadStart
 	 ; na poczatek czyszczenie pamieci od MEMLO do MEMTOP
      LDY   MEMLO
@@ -331,15 +327,9 @@ LastMemPageClear
      CPY  #$FF
      BNE   LastMemPageClear
 	 ; wyczyszczona, wiec ....
-     LDA   tempToFileEndL
-     STA   ToFileEndL
      LDA  #$FF
      STA   KBCODES
      INC   WhatIsIt	; zmiana BCS omijajacego procedure na LDA (adres pierwszego bloku do STARTADR)
-     LDX   SecLen		; dlugosc sektora do X, czyli wymuszenie przeczytania nastepnego sektora
-	 LDA   Seclen+1			; --
-	 STA   InSectorCountH		; --   obsluga sektorow ponad 256b
-     ;jmp *
      JMP   FileNextBlock
 ; tymczasowe przechowanie najmlodszego bajtu licznika do konca pliku
 ; sluzy do przepisania tego bajtu z glownego programu do zmiennej loadera
